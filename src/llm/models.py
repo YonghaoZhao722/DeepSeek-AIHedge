@@ -5,14 +5,14 @@ from langchain_openai import ChatOpenAI
 from enum import Enum
 from pydantic import BaseModel
 from typing import Tuple
-
+from src.llm.siliconflow_ds import ChatSiliconFlow
 
 class ModelProvider(str, Enum):
     """Enum for supported LLM providers"""
     OPENAI = "OpenAI"
     GROQ = "Groq"
     ANTHROPIC = "Anthropic"
-
+    SILICONFLOW = "SiliconFlow"
 
 class LLMModel(BaseModel):
     """Represents an LLM model configuration"""
@@ -71,6 +71,11 @@ AVAILABLE_MODELS = [
         model_name="claude-3-opus-latest",
         provider=ModelProvider.ANTHROPIC
     ),
+    LLMModel(
+        display_name="deepseek-v3 [siliconflow]",
+        model_name="deepseek-ai/DeepSeek-V3",
+        provider=ModelProvider.SILICONFLOW
+    ),
 ]
 
 # Create LLM_ORDER in the format expected by the UI
@@ -102,3 +107,9 @@ def get_model(model_name: str, model_provider: ModelProvider) -> ChatOpenAI | Ch
             print(f"API Key Error: Please make sure ANTHROPIC_API_KEY is set in your .env file.")
             raise ValueError("Anthropic API key not found.  Please make sure ANTHROPIC_API_KEY is set in your .env file.")
         return ChatAnthropic(model=model_name, api_key=api_key)
+    elif model_provider == ModelProvider.SILICONFLOW:
+        api_key = os.getenv("SILICONFLOW_API_KEY")
+        if not api_key:
+            print(f"API Key Error: Please make sure SILICONFLOW_API_KEY is set in your .env file.")
+            raise ValueError("SiliconFlow API key not found.  Please make sure SILICONFLOW_API_KEY is set in your .env file.")
+        return ChatSiliconFlow(model=model_name, api_key=api_key)
