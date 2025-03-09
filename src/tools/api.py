@@ -265,13 +265,8 @@ def analyze_news_sentiment(ticker: str, news_title: str, news_summary: str | Non
     return analyze_news_sentiment_batch(ticker, [(news_title, news_summary)])[0]
 
 
-def get_company_news(
-    ticker: str,
-    end_date: str,
-    start_date: str | None = None,
-    limit: int = 1000,
-) -> list[CompanyNews]:
-    """获取公司新闻数据"""
+def get_company_news(ticker: str, end_date: str, limit: int = 5) -> list[CompanyNews]:
+    """获取公司新闻"""
     # 检查缓存
     if cached_data := _cache.get_company_news(ticker):
         # 过滤缓存数据
@@ -328,19 +323,22 @@ def get_company_news(
             sentiments = analyze_news_sentiment_batch(ticker, valid_news_items)
             
             # 创建CompanyNews对象
+            # Parse and format news items
             company_news = []
             for av_news, sentiment in zip(news_data, sentiments):
-                news = CompanyNews(
-                    ticker=ticker,
-                    title=av_news.title,
-                    author=", ".join(av_news.authors) if av_news.authors else "Unknown",
-                    source=av_news.source or av_news.source_domain or "Unknown",
-                    date=av_news.time_published,
-                    url=av_news.url,
-                    sentiment=sentiment
-                )
-                company_news.append(news)
-
+                # Add null check and field validation
+                if av_news.time_published:  # Use time_published field as publication date
+                    news = CompanyNews(
+                        ticker=ticker,
+                        title=av_news.title,
+                        author=", ".join(av_news.authors) if av_news.authors else "Unknown",
+                        source=av_news.source or av_news.source_domain or "Unknown",
+                        published=av_news.time_published,  # Map time_published to published
+                        url=av_news.url,
+                        sentiment=sentiment
+                    )
+                    company_news.append(news)
+    
             # 按日期排序并限制数量
             company_news.sort(key=lambda x: x.date, reverse=True)
             company_news = company_news[:limit]
@@ -384,11 +382,21 @@ class FinancialData:
         self.overview = None
         self.prices = None
 
+# 添加一个新函数来检测 API 限制错误
+def check_api_limit_error(response_data):
+    """检查响应中是否包含 API 限制错误信息"""
+    if isinstance(response_data, dict) and "Information" in response_data:
+        info = response_data["Information"]
+        if "rate limit" in info.lower() or "API key" in info.lower():
+            return info
+    return None
+
 def get_financial_data(
     ticker: str,
     start_date: str = None,
     end_date: str = None,
-    data_types: list[str] = ["all"]
+    data_types: list[str] = ["all"],
+    api_errors: list = None
 ) -> FinancialData:
     """统一获取财务数据的函数
     
@@ -397,7 +405,11 @@ def get_financial_data(
         start_date: 开始日期
         end_date: 结束日期
         data_types: 需要获取的数据类型，可选：["prices", "fundamentals", "overview", "all"]
+        api_errors: 用于收集 API 错误的列表
     """
+    if api_errors is None:
+        api_errors = []
+        
     if not (api_key := os.environ.get("ALPHA_VANTAGE_API_KEY")):
         raise Exception("Alpha Vantage API key not found")
 
@@ -431,6 +443,11 @@ def get_financial_data(
             response = requests.get(url)
             if response.status_code == 200:
                 data = response.json()
+                
+                # 检查 API 限制
+                if error_msg := check_api_limit_error(data):
+                    api_errors.append(f"价格数据 ({ticker}): {error_msg}")
+                    
                 av_response = AlphaVantagePriceResponse(**data)
                 result.prices = [
                     Price(**{**dict(price_data), "time": date})
@@ -444,23 +461,39 @@ def get_financial_data(
             # 获取现金流量表
             response = requests.get(f"https://www.alphavantage.co/query?function=CASH_FLOW&symbol={ticker}&apikey={api_key}")
             if response.status_code == 200:
-                result.cash_flow = response.json()
+                data = response.json()
+                # 检查 API 限制
+                if error_msg := check_api_limit_error(data):
+                    api_errors.append(f"现金流量表 ({ticker}): {error_msg}")
+                result.cash_flow = data
 
             # 获取资产负债表
             response = requests.get(f"https://www.alphavantage.co/query?function=BALANCE_SHEET&symbol={ticker}&apikey={api_key}")
             if response.status_code == 200:
-                result.balance_sheet = response.json()
+                data = response.json()
+                # 检查 API 限制
+                if error_msg := check_api_limit_error(data):
+                    api_errors.append(f"资产负债表 ({ticker}): {error_msg}")
+                result.balance_sheet = data
 
             # 获取利润表
             response = requests.get(f"https://www.alphavantage.co/query?function=INCOME_STATEMENT&symbol={ticker}&apikey={api_key}")
             if response.status_code == 200:
-                result.income_statement = response.json()
+                data = response.json()
+                # 检查 API 限制
+                if error_msg := check_api_limit_error(data):
+                    api_errors.append(f"利润表 ({ticker}): {error_msg}")
+                result.income_statement = data
 
         # 获取公司概览数据
         if "all" in data_types or "overview" in data_types:
             response = requests.get(f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}")
             if response.status_code == 200:
-                result.overview = response.json()
+                data = response.json()
+                # 检查 API 限制
+                if error_msg := check_api_limit_error(data):
+                    api_errors.append(f"公司概览 ({ticker}): {error_msg}")
+                result.overview = data
 
         # 缓存结果
         cache_data = {

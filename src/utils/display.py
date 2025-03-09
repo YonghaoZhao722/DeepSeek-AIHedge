@@ -2,6 +2,8 @@ from colorama import Fore, Style
 from tabulate import tabulate
 from .analysts import ANALYST_ORDER
 import os
+import requests
+import json
 
 
 def sort_analyst_signals(signals):
@@ -229,3 +231,72 @@ def format_backtest_row(
             f"{Fore.RED}{bearish_count}{Style.RESET_ALL}",
             f"{Fore.BLUE}{neutral_count}{Style.RESET_ALL}",
         ]
+
+
+def send_to_feishu_webhook(result: dict, webhook_url: str) -> None:
+    """
+    将交易结果发送到飞书webhook
+    """
+    # 构建飞书消息
+    message = {
+        "msg_type": "post",
+        "content": {
+            "post": {
+                "zh_cn": {
+                    "title": "股票策略报告",
+                    "content": []
+                }
+            }
+        }
+    }
+    
+    decisions = result.get("decisions", {})
+    if not decisions:
+        message["content"]["post"]["zh_cn"]["content"].append([
+            {"tag": "text", "text": "没有可用的交易决策"}
+        ])
+        return
+    
+    # 添加每个股票的分析结果
+    for ticker, decision in decisions.items():
+        sections = []
+        
+        # 添加分析师信号
+        analyst_signals = []
+        for agent, signals in result.get("analyst_signals", {}).items():
+            if ticker in signals:
+                signal = signals[ticker]
+                agent_name = agent.replace("_agent", "").replace("_", " ").title()
+                signal_type = signal.get("signal", "").upper()
+                confidence = signal.get("confidence", 0)
+                analyst_signals.append(f"{agent_name}: {signal_type} ({confidence}%)")
+        
+        if analyst_signals:
+            sections.append([
+                {"tag": "text", "text": "\n分析师信号:\n• " + "\n• ".join(analyst_signals)}
+            ])
+        
+        # 添加交易决策
+        action = decision.get("action", "").upper()
+        quantity = decision.get("quantity", 0)
+        confidence = decision.get("confidence", 0)
+        reasoning = decision.get("reasoning", "")
+        
+        sections.append([
+            {"tag": "text", "text": f"\n交易决策:\n• 操作: {action}\n• 数量: {quantity}\n• 置信度: {confidence}%\n\n理由:\n{reasoning}"}
+        ])
+        
+        # 添加到主消息
+        message["content"]["post"]["zh_cn"]["content"].extend([
+            [{"tag": "text", "text": f"\n股票: {ticker}"}],
+            *sections,
+            [{"tag": "text", "text": "\n-------------------"}]
+        ])
+    
+    # 发送到飞书webhook
+    try:
+        response = requests.post(webhook_url, json=message)
+        response.raise_for_status()
+        print(f"{Fore.GREEN}成功发送到飞书{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}发送到飞书失败: {e}{Style.RESET_ALL}")

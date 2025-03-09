@@ -12,7 +12,7 @@ from agents.sentiment import sentiment_agent
 from agents.warren_buffett import warren_buffett_agent
 from graph.state import AgentState
 from agents.valuation import valuation_agent
-from utils.display import print_trading_output
+from utils.display import print_trading_output, send_to_feishu_webhook
 from utils.analysts import ANALYST_ORDER
 from utils.progress import progress
 from llm.models import LLM_ORDER, get_model_info
@@ -22,7 +22,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from tabulate import tabulate
 from utils.visualize import save_graph_as_png
-
+import os 
 # Load environment variables from .env file
 load_dotenv()
 
@@ -104,7 +104,7 @@ def create_workflow(selected_analysts=None):
 
     # Default to all analysts if none selected
     if selected_analysts is None:
-        selected_analysts = ["technical_analyst", "fundamentals_analyst", "sentiment_analyst", "valuation_analyst"]
+        selected_analysts = ["technical_analyst", "fundamentals_analyst", "sentiment_analyst", "valuation_analyst", "warren_buffett"]
 
     # Dictionary of all available analysts
     analyst_nodes = {
@@ -164,44 +164,44 @@ if __name__ == "__main__":
 
     # Select analysts
     selected_analysts = None
-    choices = questionary.checkbox(
-        "Select your AI analysts.",
-        choices=[questionary.Choice(display, value=value) for display, value in ANALYST_ORDER],
-        instruction="\n\nInstructions: \n1. Press Space to select/unselect analysts.\n2. Press 'a' to select/unselect all.\n3. Press Enter when done to run the hedge fund.\n",
-        validate=lambda x: len(x) > 0 or "You must select at least one analyst.",
-        style=questionary.Style(
-            [
-                ("checkbox-selected", "fg:green"),
-                ("selected", "fg:green noinherit"),
-                ("highlighted", "noinherit"),
-                ("pointer", "noinherit"),
-            ]
-        ),
-    ).ask()
+    # choices = questionary.checkbox(
+    #     "Select your AI analysts.",
+    #     choices=[questionary.Choice(display, value=value) for display, value in ANALYST_ORDER],
+    #     instruction="\n\nInstructions: \n1. Press Space to select/unselect analysts.\n2. Press 'a' to select/unselect all.\n3. Press Enter when done to run the hedge fund.\n",
+    #     validate=lambda x: len(x) > 0 or "You must select at least one analyst.",
+    #     style=questionary.Style(
+    #         [
+    #             ("checkbox-selected", "fg:green"),
+    #             ("selected", "fg:green noinherit"),
+    #             ("highlighted", "noinherit"),
+    #             ("pointer", "noinherit"),
+    #         ]
+    #     ),
+    # ).ask()
 
-    if not choices:
-        print("You must select at least one analyst. Using all analysts by default.")
-        selected_analysts = None
-    else:
-        selected_analysts = choices
-        print(f"\nSelected analysts: {', '.join(Fore.GREEN + choice.title().replace('_', ' ') + Style.RESET_ALL for choice in choices)}\n")
+    # if not choices:
+    #     print("You must select at least one analyst. Using all analysts by default.")
+    #     selected_analysts = None
+    # else:
+    #     selected_analysts = choices
+    #     print(f"\nSelected analysts: {', '.join(Fore.GREEN + choice.title().replace('_', ' ') + Style.RESET_ALL for choice in choices)}\n")
 
     # Select LLM model
-    model_choice = questionary.select(
-        "Select your LLM model:",
-        choices=[questionary.Choice(display, value=value) for display, value, _ in LLM_ORDER],
-        style=questionary.Style([
-            ("selected", "fg:green bold"),
-            ("pointer", "fg:green bold"),
-            ("highlighted", "fg:green"),
-            ("answer", "fg:green bold"),
-        ])
-    ).ask()
-
+    # model_choice = questionary.select(
+    #     "Select your LLM model:",
+    #     choices=[questionary.Choice(display, value=value) for display, value, _ in LLM_ORDER],
+    #     style=questionary.Style([
+    #         ("selected", "fg:green bold"),
+    #         ("pointer", "fg:green bold"),
+    #         ("highlighted", "fg:green"),
+    #         ("answer", "fg:green bold"),
+    #     ])
+    # ).ask()
+    model_choice = ''
     if not model_choice:
-        print("Using default model: gpt-4o")
-        model_choice = "gpt-4o"
-        model_provider = "OpenAI"
+        print("Using default model: deepseek")
+        model_choice = "deepseek-ai/DeepSeek-V3"
+        model_provider = "SILICONFLOW"
     else:
         # Get model info using the helper function
         model_info = get_model_info(model_choice)
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     # Create the workflow with selected analysts
     workflow = create_workflow(selected_analysts)
     app = workflow.compile()
-
+    
     if args.show_agent_graph:
         file_path = ""
         if selected_analysts is not None:
@@ -264,3 +264,5 @@ if __name__ == "__main__":
         model_provider=model_provider,
     )
     print_trading_output(result)
+    feishu_webhook = os.environ.get("FEISHU_WEBHOOK_URL")
+    send_to_feishu_webhook(result, feishu_webhook)
