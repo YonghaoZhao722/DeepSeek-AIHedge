@@ -1,19 +1,40 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pydantic import model_validator
 
 
 class Price(BaseModel):
-    open: float
-    close: float
-    high: float
-    low: float
-    volume: int
-    time: str
+    open: float = Field(validation_alias="1. open", serialization_alias="open")
+    high: float = Field(validation_alias="2. high", serialization_alias="high")
+    low: float = Field(validation_alias="3. low", serialization_alias="low")
+    close: float = Field(validation_alias="4. close", serialization_alias="close")
+    volume: int = Field(validation_alias="5. volume", serialization_alias="volume")
+    time: str  # 将在数据处理时从字典键中获取
+
+    model_config = {
+        "populate_by_name": True
+    }
 
 
 class PriceResponse(BaseModel):
     ticker: str
     prices: list[Price]
 
+class AlphaVantagePriceResponse(BaseModel):
+    metadata: dict = Field(alias="Meta Data", default_factory=dict)
+    time_series: dict = Field(alias="Time Series (Daily)", default_factory=dict)
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_api_limit(cls, data: dict) -> dict:
+        """检查API限制响应"""
+        if isinstance(data, dict) and "Information" in data and "rate limit" in data["Information"].lower():
+            # 如果遇到API限制，返回空数据
+            return {"Meta Data": {}, "Time Series (Daily)": {}}
+        return data
+
+    model_config = {
+        "populate_by_name": True
+    }
 
 class FinancialMetrics(BaseModel):
     ticker: str
@@ -114,6 +135,61 @@ class CompanyNewsResponse(BaseModel):
     news: list[CompanyNews]
 
 
+class AlphaVantageNews(BaseModel):
+    title: str
+    url: str
+    time_published: str = Field(alias="published")
+    authors: list[str] | None = None
+    summary: str | None = None
+    source: str | None = None
+    category_within_source: str | None = None
+    source_domain: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_api_limit(cls, data: dict) -> dict:
+        """检查API限制响应"""
+        if isinstance(data, dict) and "Information" in data and "rate limit" in data["Information"].lower():
+            return {}
+        return data
+
+    def to_company_news(self, ticker: str) -> CompanyNews:
+        """转换为统一的CompanyNews格式"""
+        from tools.api import analyze_news_sentiment
+        
+        # 使用大模型分析新闻情感
+        sentiment = analyze_news_sentiment(
+            ticker=ticker,
+            news_title=self.title,
+            news_summary=self.summary
+        )
+        
+        return CompanyNews(
+            ticker=ticker,
+            title=self.title,
+            author=", ".join(self.authors) if self.authors else "Unknown",
+            source=self.source or self.source_domain or "Unknown",
+            date=self.time_published,
+            url=self.url,
+            sentiment=sentiment
+        )
+
+class AlphaVantageNewsResponse(BaseModel):
+    items: list[dict] = Field(default_factory=list, alias="feed")
+    
+    @model_validator(mode='before')
+    @classmethod
+    def check_api_limit(cls, data: dict) -> dict:
+        """检查API限制响应"""
+        if isinstance(data, dict) and "Information" in data and "rate limit" in data["Information"].lower():
+            return {"feed": []}
+        return data
+
+    model_config = {
+        "populate_by_name": True
+    }
+
+
 class Position(BaseModel):
     cash: float = 0.0
     shares: int = 0
@@ -148,3 +224,52 @@ class AgentStateData(BaseModel):
 class AgentStateMetadata(BaseModel):
     show_reasoning: bool = False
     model_config = {"extra": "allow"}
+
+
+class AlphaVantageInsiderTrade(BaseModel):
+    symbol: str
+    filing_date: str
+    transaction_date: str
+    transaction_type: str
+    shares: float | None = Field(default=None, alias="shares_transacted")
+    price: float | None = Field(default=None, alias="transaction_price")
+    insider_name: str | None = None
+    insider_title: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_api_limit(cls, data: dict) -> dict:
+        """检查API限制响应"""
+        if isinstance(data, dict) and "Information" in data and "rate limit" in data["Information"].lower():
+            return {}
+        return data
+
+    def to_insider_trade(self) -> InsiderTrade:
+        """转换为统一的InsiderTrade格式"""
+        return InsiderTrade(
+            ticker=self.symbol,
+            filing_date=self.filing_date,
+            transaction_date=self.transaction_date,
+            name=self.insider_name,
+            title=self.insider_title,
+            transaction_shares=self.shares,
+            transaction_price_per_share=self.price,
+            transaction_value=(self.shares or 0) * (self.price or 0),
+            shares_owned_before_transaction=None,
+            shares_owned_after_transaction=None,
+            is_board_director=None,
+            issuer=self.symbol,
+            security_title=None
+        )
+
+class AlphaVantageInsiderTradeResponse(BaseModel):
+    symbol: str | None = None
+    insider_transactions: list[dict] = Field(default_factory=list)
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_api_limit(cls, data: dict) -> dict:
+        """检查API限制响应"""
+        if isinstance(data, dict) and "Information" in data and "rate limit" in data["Information"].lower():
+            return {"symbol": None, "insider_transactions": []}
+        return data

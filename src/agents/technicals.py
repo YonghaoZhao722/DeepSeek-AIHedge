@@ -217,24 +217,38 @@ def calculate_mean_reversion_signals(prices_df):
 
 
 def calculate_momentum_signals(prices_df):
-    """
-    Multi-factor momentum strategy
-    """
-    # Price momentum
+    """Multi-factor momentum strategy"""
+    # Price momentum with data length check
     returns = prices_df["close"].pct_change()
-    mom_1m = returns.rolling(21).sum()
-    mom_3m = returns.rolling(63).sum()
-    mom_6m = returns.rolling(126).sum()
+    
+    # 根据可用数据长度调整周期
+    available_periods = len(returns.dropna())
+    mom_1m = returns.rolling(min(21, available_periods)).sum()
+    mom_3m = returns.rolling(min(63, available_periods)).sum()
+    mom_6m = returns.rolling(min(126, available_periods)).sum()
 
     # Volume momentum
-    volume_ma = prices_df["volume"].rolling(21).mean()
+    volume_ma = prices_df["volume"].rolling(min(21, available_periods)).mean()
     volume_momentum = prices_df["volume"] / volume_ma
 
-    # Relative strength
-    # (would compare to market/sector in real implementation)
-
-    # Calculate momentum score
-    momentum_score = (0.4 * mom_1m + 0.3 * mom_3m + 0.3 * mom_6m).iloc[-1]
+    # Calculate momentum score with available data
+    momentum_score = 0
+    weights_sum = 0
+    
+    if not pd.isna(mom_1m.iloc[-1]):
+        momentum_score += 0.4 * mom_1m.iloc[-1]
+        weights_sum += 0.4
+    if not pd.isna(mom_3m.iloc[-1]):
+        momentum_score += 0.3 * mom_3m.iloc[-1]
+        weights_sum += 0.3
+    if not pd.isna(mom_6m.iloc[-1]):
+        momentum_score += 0.3 * mom_6m.iloc[-1]
+        weights_sum += 0.3
+        
+    if weights_sum > 0:
+        momentum_score = momentum_score / weights_sum
+    else:
+        momentum_score = 0
 
     # Volume confirmation
     volume_confirmation = volume_momentum.iloc[-1] > 1.0
@@ -262,76 +276,111 @@ def calculate_momentum_signals(prices_df):
 
 
 def calculate_volatility_signals(prices_df):
-    """
-    Volatility-based trading strategy
-    """
-    # Calculate various volatility metrics
+    """Volatility-based trading strategy"""
     returns = prices_df["close"].pct_change()
-
+    available_periods = len(returns.dropna())
+    
+    # 调整计算周期以适应可用数据
+    vol_period = min(21, available_periods)
+    regime_period = min(63, available_periods)
+    
     # Historical volatility
-    hist_vol = returns.rolling(21).std() * math.sqrt(252)
-
-    # Volatility regime detection
-    vol_ma = hist_vol.rolling(63).mean()
-    vol_regime = hist_vol / vol_ma
-
-    # Volatility mean reversion
-    vol_z_score = (hist_vol - vol_ma) / hist_vol.rolling(63).std()
+    hist_vol = returns.rolling(vol_period).std() * math.sqrt(252)
+    
+    # Volatility regime detection with minimum periods check
+    if available_periods >= regime_period:
+        vol_ma = hist_vol.rolling(regime_period).mean()
+        vol_regime = hist_vol / vol_ma.replace(0, float('nan'))
+        vol_std = hist_vol.rolling(regime_period).std()
+        vol_z_score = (hist_vol - vol_ma) / vol_std.replace(0, float('nan'))
+        current_vol_regime = vol_regime.iloc[-1]
+        vol_z = vol_z_score.iloc[-1]
+    else:
+        # 如果数据不足，使用简单的波动率比较
+        current_vol_regime = 1.0  # 假设当前处于正常波动率区间
+        recent_vol = hist_vol.iloc[-min(5, len(hist_vol)):]
+        vol_z = (hist_vol.iloc[-1] - recent_vol.mean()) / (recent_vol.std() if len(recent_vol) > 1 else 1)
 
     # ATR ratio
     atr = calculate_atr(prices_df)
     atr_ratio = atr / prices_df["close"]
 
-    # Generate signal based on volatility regime
-    current_vol_regime = vol_regime.iloc[-1]
-    vol_z = vol_z_score.iloc[-1]
-
-    if current_vol_regime < 0.8 and vol_z < -1:
-        signal = "bullish"  # Low vol regime, potential for expansion
-        confidence = min(abs(vol_z) / 3, 1.0)
-    elif current_vol_regime > 1.2 and vol_z > 1:
-        signal = "bearish"  # High vol regime, potential for contraction
-        confidence = min(abs(vol_z) / 3, 1.0)
+    # Generate signal based on available metrics
+    if pd.notna(current_vol_regime) and pd.notna(vol_z):
+        if current_vol_regime < 0.8 and vol_z < -1:
+            signal = "bullish"
+            confidence = min(abs(vol_z) / 3, 1.0)
+        elif current_vol_regime > 1.2 and vol_z > 1:
+            signal = "bearish"
+            confidence = min(abs(vol_z) / 3, 1.0)
+        else:
+            signal = "neutral"
+            confidence = 0.5
     else:
-        signal = "neutral"
-        confidence = 0.5
+        # 使用简单的ATR比率作为备选指标
+        if atr_ratio.iloc[-1] > atr_ratio.rolling(vol_period).mean().iloc[-1]:
+            signal = "bearish"
+            confidence = 0.6
+        else:
+            signal = "neutral"
+            confidence = 0.5
 
     return {
         "signal": signal,
         "confidence": confidence,
         "metrics": {
             "historical_volatility": float(hist_vol.iloc[-1]),
-            "volatility_regime": float(current_vol_regime),
-            "volatility_z_score": float(vol_z),
+            "volatility_regime": float(current_vol_regime) if pd.notna(current_vol_regime) else 1.0,
+            "volatility_z_score": float(vol_z) if pd.notna(vol_z) else 0.0,
             "atr_ratio": float(atr_ratio.iloc[-1]),
         },
     }
 
 
 def calculate_stat_arb_signals(prices_df):
-    """
-    Statistical arbitrage signals based on price action analysis
-    """
-    # Calculate price distribution statistics
-    returns = prices_df["close"].pct_change()
-
-    # Skewness and kurtosis
-    skew = returns.rolling(63).skew()
-    kurt = returns.rolling(63).kurt()
-
-    # Test for mean reversion using Hurst exponent
+    """Statistical arbitrage signals based on price action analysis"""
+    returns = prices_df["close"].pct_change().dropna()
+    available_periods = len(returns)
+    min_periods = min(63, available_periods)
+    
+    if min_periods < 5:  # 数据太少，返回中性信号
+        return {
+            "signal": "neutral",
+            "confidence": 0.5,
+            "metrics": {
+                "hurst_exponent": 0.5,
+                "skewness": 0.0,
+                "kurtosis": 0.0,
+            },
+        }
+    
+    # 使用动态窗口计算统计量
+    rolling_window = returns.rolling(window=min_periods, min_periods=5)
+    
+    # 计算偏度和峰度，使用较小的窗口以确保有值
+    skew = rolling_window.skew().iloc[-1]
+    kurt = rolling_window.kurt().iloc[-1]
+    
+    # 如果统计量为NaN，使用整个序列的统计量
+    if pd.isna(skew):
+        skew = returns.skew() if len(returns) > 0 else 0.0
+    if pd.isna(kurt):
+        kurt = returns.kurtosis() if len(returns) > 0 else 0.0
+    
+    # 计算Hurst指数
     hurst = calculate_hurst_exponent(prices_df["close"])
-
-    # Correlation analysis
-    # (would include correlation with related securities in real implementation)
-
-    # Generate signal based on statistical properties
-    if hurst < 0.4 and skew.iloc[-1] > 1:
-        signal = "bullish"
-        confidence = (0.5 - hurst) * 2
-    elif hurst < 0.4 and skew.iloc[-1] < -1:
-        signal = "bearish"
-        confidence = (0.5 - hurst) * 2
+    
+    # 根据可用的统计量生成信号
+    if pd.notna(hurst) and pd.notna(skew):
+        if hurst < 0.4 and skew > 1:
+            signal = "bullish"
+            confidence = (0.5 - hurst) * 2
+        elif hurst < 0.4 and skew < -1:
+            signal = "bearish"
+            confidence = (0.5 - hurst) * 2
+        else:
+            signal = "neutral"
+            confidence = 0.5
     else:
         signal = "neutral"
         confidence = 0.5
@@ -341,8 +390,8 @@ def calculate_stat_arb_signals(prices_df):
         "confidence": confidence,
         "metrics": {
             "hurst_exponent": float(hurst),
-            "skewness": float(skew.iloc[-1]),
-            "kurtosis": float(kurt.iloc[-1]),
+            "skewness": float(skew) if pd.notna(skew) else 0.0,
+            "kurtosis": float(kurt) if pd.notna(kurt) else 0.0,
         },
     }
 
@@ -483,27 +532,31 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 def calculate_hurst_exponent(price_series: pd.Series, max_lag: int = 20) -> float:
-    """
-    Calculate Hurst Exponent to determine long-term memory of time series
-    H < 0.5: Mean reverting series
-    H = 0.5: Random walk
-    H > 0.5: Trending series
-
-    Args:
-        price_series: Array-like price data
-        max_lag: Maximum lag for R/S calculation
-
-    Returns:
-        float: Hurst exponent
-    """
+    """Calculate Hurst Exponent with improved reliability"""
+    # 确保数据量充足
+    if len(price_series) < max_lag * 2:
+        max_lag = len(price_series) // 2
+    
+    if max_lag < 4:  # 数据太少，返回0.5表示随机游走
+        return 0.5
+        
     lags = range(2, max_lag)
-    # Add small epsilon to avoid log(0)
-    tau = [max(1e-8, np.sqrt(np.std(np.subtract(price_series[lag:], price_series[:-lag])))) for lag in lags]
-
-    # Return the Hurst exponent from linear fit
+    tau = []
+    
+    # 计算每个lag的标准差
+    for lag in lags:
+        # 计算价格差异
+        price_diff = np.subtract(price_series[lag:].values, price_series[:-lag].values)
+        # 添加小的epsilon避免取log(0)
+        tau.append(np.sqrt(np.std(price_diff) + 1e-10))
+    
+    # 使用对数回归计算Hurst指数
     try:
         reg = np.polyfit(np.log(lags), np.log(tau), 1)
-        return reg[0]  # Hurst exponent is the slope
-    except (ValueError, RuntimeWarning):
-        # Return 0.5 (random walk) if calculation fails
-        return 0.5
+        h = reg[0]  # Hurst指数是斜率
+        
+        # 限制Hurst指数在合理范围内
+        h = max(0, min(1, h))
+        return h
+    except:
+        return 0.5  # 计算失败时返回0.5表示随机游走

@@ -7,6 +7,7 @@ class Cache:
         self._line_items_cache: dict[str, list[dict[str, any]]] = {}
         self._insider_trades_cache: dict[str, list[dict[str, any]]] = {}
         self._company_news_cache: dict[str, list[dict[str, any]]] = {}
+        self._financial_data_cache: dict[str, dict[str, any]] = {}
 
     def _merge_data(self, existing: list[dict] | None, new_data: list[dict], key_field: str) -> list[dict]:
         """Merge existing and new data, avoiding duplicates based on a key field."""
@@ -80,6 +81,14 @@ class Cache:
             data,
             key_field="date"
         )
+
+    def get_financial_data(self, ticker: str) -> dict:
+        """获取缓存的财务数据"""
+        return self._financial_data_cache.get(ticker)
+
+    def set_financial_data(self, ticker: str, data: dict) -> None:
+        """缓存财务数据"""
+        self._financial_data_cache[ticker] = data
 
 
 # Global cache instance
