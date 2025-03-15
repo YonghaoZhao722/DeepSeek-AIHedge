@@ -34,11 +34,11 @@ def call_llm(
     from llm.models import get_model, get_model_info
     
     model_info = get_model_info(model_name)
-    llm = get_model(model_name, model_provider)
-    
+    first_llm = get_model(model_name, model_provider)
+    #print(f"Using model: {model_name}")
     # For non-Deepseek models, we can use structured output
     if not (model_info and model_info.is_deepseek()):
-        llm = llm.with_structured_output(
+        first_llm = llm.with_structured_output(
             pydantic_model,
             method="json_mode",
         )
@@ -47,11 +47,13 @@ def call_llm(
     for attempt in range(max_retries):
         try:
             # Call the LLM
-            result = llm.invoke(prompt)
+            #print(f"Prompt: {prompt}", first_llm)
+            result = first_llm.invoke(prompt)
             
             # For Deepseek, we need to extract and parse the JSON manually
             if model_info and model_info.is_deepseek():
                 parsed_result = extract_json_from_deepseek_response(result.content)
+                #print(f"Parsed result: {parsed_result}")
                 if parsed_result:
                     return pydantic_model(**parsed_result)
             else:

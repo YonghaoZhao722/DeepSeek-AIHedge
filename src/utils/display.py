@@ -294,9 +294,11 @@ def send_to_feishu_webhook(result: dict, webhook_url: str) -> None:
         ])
     
     # 发送到飞书webhook
-    try:
-        response = requests.post(webhook_url, json=message)
-        response.raise_for_status()
-        print(f"{Fore.GREEN}成功发送到飞书{Style.RESET_ALL}")
-    except Exception as e:
-        print(f"{Fore.RED}发送到飞书失败: {e}{Style.RESET_ALL}")
+    url_list = webhook_url.split(',')
+    for url in url_list:
+        try:
+            response = requests.post(url, json=message)
+            response.raise_for_status()
+            print(f"{Fore.GREEN}成功发送到飞书{Style.RESET_ALL}, url = {url}")
+        except Exception as e:
+            print(f"{Fore.RED}发送到飞书失败: {e}{Style.RESET_ALL}")

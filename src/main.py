@@ -104,8 +104,8 @@ def create_workflow(selected_analysts=None):
 
     # Default to all analysts if none selected
     if selected_analysts is None:
-        selected_analysts = ["technical_analyst", "fundamentals_analyst", "sentiment_analyst", "valuation_analyst", "warren_buffett"]
-
+        #selected_analysts = ["technical_analyst", "fundamentals_analyst", "sentiment_analyst"]
+        selected_analysts = [ "technical_analyst", "sentiment_analyst"]
     # Dictionary of all available analysts
     analyst_nodes = {
         "technical_analyst": ("technical_analyst_agent", technical_analyst_agent),
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     if not model_choice:
         print("Using default model: deepseek")
         model_choice = "deepseek-ai/DeepSeek-V3"
-        model_provider = "SILICONFLOW"
+        model_provider = "SiliconFlow"
     else:
         # Get model info using the helper function
         model_info = get_model_info(model_choice)

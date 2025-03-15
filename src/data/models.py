@@ -115,8 +115,8 @@ class InsiderTrade(BaseModel):
     shares_owned_after_transaction: float | None
     security_title: str | None
     filing_date: str
-
-
+    transaction_type: str | None
+    
 class InsiderTradeResponse(BaseModel):
     insider_trades: list[InsiderTrade]
 
@@ -127,8 +127,11 @@ class CompanyNews(BaseModel):
     author: str
     source: str
     date: str
-    url: str
+    published: str | None = None
+    url: str | None = None
     sentiment: str | None = None
+    sentiment_score: float
+    relevance_score: float
 
 
 class CompanyNewsResponse(BaseModel):
@@ -138,7 +141,7 @@ class CompanyNewsResponse(BaseModel):
 class AlphaVantageNews(BaseModel):
     title: str
     url: str
-    time_published: str = Field(alias="published")
+    time_published: str = Field(alias="time_published")
     authors: list[str] | None = None
     summary: str | None = None
     source: str | None = None
@@ -230,7 +233,7 @@ class AlphaVantageInsiderTrade(BaseModel):
     symbol: str
     filing_date: str
     transaction_date: str
-    transaction_type: str
+    transaction_type: str | None = Field(default=None, aliat="acquisition_or_disposal")
     shares: float | None = Field(default=None, alias="shares_transacted")
     price: float | None = Field(default=None, alias="transaction_price")
     insider_name: str | None = None
@@ -254,6 +257,7 @@ class AlphaVantageInsiderTrade(BaseModel):
             title=self.insider_title,
             transaction_shares=self.shares,
             transaction_price_per_share=self.price,
+            transaction_type = self.transaction_type,
             transaction_value=(self.shares or 0) * (self.price or 0),
             shares_owned_before_transaction=None,
             shares_owned_after_transaction=None,

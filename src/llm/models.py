@@ -85,7 +85,8 @@ def get_model_info(model_name: str) -> LLMModel | None:
     """Get model information by model_name"""
     return next((model for model in AVAILABLE_MODELS if model.model_name == model_name), None)
 
-def get_model(model_name: str, model_provider: ModelProvider) -> ChatOpenAI | ChatGroq | None:
+def get_model(model_name: str, model_provider: str) -> ChatOpenAI | ChatGroq | ChatSiliconFlow | None:
+    #print(f"Getting model {model_name} from provider {model_provider}, {ModelProvider.SILICONFLOW}")
     if model_provider == ModelProvider.GROQ:
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:

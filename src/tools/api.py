@@ -21,7 +21,7 @@ from data.models import (
     AlphaVantageNewsResponse,
     AlphaVantageNews,
 )
-
+from datetime import datetime
 # Global cache instance
 _cache = get_cache()
 
@@ -103,8 +103,8 @@ def search_line_items(
                 # 在不同报表中查找数据
                 for data_source in [
                     financial_data.cash_flow["annualReports"][i],
-                    financial_data.balance_sheet["annualReports"][i] if financial_data.balance_sheet else {},
-                    financial_data.income_statement["annualReports"][i] if financial_data.income_statement else {}
+                    financial_data.balance_sheet.get("annualReports", [{}])[i] if financial_data.balance_sheet else {},
+                    financial_data.income_statement.get("annualReports", [{}])[i] if financial_data.income_statement else {}
                 ]:
                     if av_item in data_source:
                         try:
@@ -132,7 +132,7 @@ def get_insider_trades(
     ticker: str,
     end_date: str,
     start_date: str | None = None,
-    limit: int = 1000,
+    limit: int = 50,
 ) -> list[InsiderTrade]:
     """获取内部交易数据"""
     # 检查缓存
@@ -190,7 +190,7 @@ def get_insider_trades(
         if insider_trades:
             # 缓存结果
             _cache.set_insider_trades(ticker, [trade.model_dump() for trade in insider_trades])
-
+        
         return insider_trades
 
     except Exception as e:
@@ -232,7 +232,8 @@ def analyze_news_sentiment_batch(ticker: str, news_items: list[tuple[str, str | 
         if not model:
             print("Error: Failed to initialize DeepSeek model")
             return ['neutral'] * len(news_items)
-            
+
+        print(f"Prompt: {prompt}")    
         # 调用模型获取情感分析结果
         response = model.invoke([HumanMessage(content=prompt)])
         
@@ -265,7 +266,7 @@ def analyze_news_sentiment(ticker: str, news_title: str, news_summary: str | Non
     return analyze_news_sentiment_batch(ticker, [(news_title, news_summary)])[0]
 
 
-def get_company_news(ticker: str, end_date: str, limit: int = 5) -> list[CompanyNews]:
+def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit: int = 5) -> list[CompanyNews]:
     """获取公司新闻"""
     # 检查缓存
     if cached_data := _cache.get_company_news(ticker):
@@ -287,74 +288,80 @@ def get_company_news(ticker: str, end_date: str, limit: int = 5) -> list[Company
 
         url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
         response = requests.get(url)
-        
+
         if response.status_code != 200:
             print(f"Error fetching news for {ticker}: {response.status_code}")
             return []
-
+        # 解析响应数据
         data = response.json()
+        #print(f"Response: {data}")
         
         # 检查API限制
         if "Information" in data and "rate limit" in data["Information"].lower():
             print(f"API rate limit reached for {ticker} news")
             return []
 
-        # 解析响应数据
-        av_response = AlphaVantageNewsResponse(**data)
-        
+        # 初始化整体情感得分计算
+        total_weighted_score = 0.0
+        total_relevance = 0.0
+        feed_num = 0
+
         # 收集所有符合日期范围的新闻
-        valid_news_items = []
-        news_data = []
-        for news_item in av_response.items:
+        company_news = []
+        for news_item in data.get("feed", []):
             try:
-                av_news = AlphaVantageNews(**news_item)
-                news_date = av_news.time_published.split("T")[0]  # 提取日期部分
-                
-                # 过滤日期范围
-                if (start_date is None or news_date >= start_date) and news_date <= end_date:
-                    valid_news_items.append((av_news.title, av_news.summary))
-                    news_data.append(av_news)
+                # 提取日期并过滤
+                #print(f"News item: {news_item}")
+                news_date = datetime.strptime(news_item["time_published"][:8] , "%Y%m%d")# 提取YYYYMMDD
+                end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                #print(news_item["time_published"][:8], end_date)
+                if (start_date is None or news_date >= start_date) and news_date <= end_date_dt:
+                    # 查找当前ticker的相关情感数据
+                    ticker_sentiment = next(
+                        (ts for ts in news_item.get("ticker_sentiment", []) 
+                         if ts["ticker"] == ticker),
+                        None
+                    )
+                    
+                    if ticker_sentiment:
+                        # 计算加权情感得分
+                        relevance_score = float(ticker_sentiment["relevance_score"])
+                        sentiment_score = float(ticker_sentiment["ticker_sentiment_score"])
+                        total_weighted_score += relevance_score * sentiment_score
+                        total_relevance += relevance_score
+                        feed_num += 1
+
+                    # 创建CompanyNews对象
+                    news = CompanyNews(
+                        ticker=ticker,
+                        title=news_item["title"],
+                        author=", ".join(news_item.get("authors", [])) or "Unknown",
+                        source=news_item.get("source", "Unknown"),
+                        published=news_item["time_published"],
+                        url=news_item["url"],
+                        date=news_item["time_published"][:10],  # Extract YYYY-MM-DD from time_published
+                        sentiment=ticker_sentiment["ticker_sentiment_label"] if ticker_sentiment else "Neutral",
+                        sentiment_score=float(ticker_sentiment["ticker_sentiment_score"]) if ticker_sentiment else 0.0,
+                        relevance_score=float(ticker_sentiment["relevance_score"]) if ticker_sentiment else 0.0
+                    )
+                    company_news.append(news)
+                    
             except Exception as e:
                 print(f"Error processing news item: {str(e)}")
                 continue
+        #print(f"Company news: {company_news}")
+        
+        
 
-        # 批量分析情感
-        if valid_news_items:
-            sentiments = analyze_news_sentiment_batch(ticker, valid_news_items)
-            
-            # 创建CompanyNews对象
-            # Parse and format news items
-            company_news = []
-            for av_news, sentiment in zip(news_data, sentiments):
-                # Add null check and field validation
-                if av_news.time_published:  # Use time_published field as publication date
-                    news = CompanyNews(
-                        ticker=ticker,
-                        title=av_news.title,
-                        author=", ".join(av_news.authors) if av_news.authors else "Unknown",
-                        source=av_news.source or av_news.source_domain or "Unknown",
-                        published=av_news.time_published,  # Map time_published to published
-                        url=av_news.url,
-                        sentiment=sentiment
-                    )
-                    company_news.append(news)
-    
-            # 按日期排序并限制数量
-            company_news.sort(key=lambda x: x.date, reverse=True)
-            company_news = company_news[:limit]
+        #print(f"Overall sentiment for {ticker}: {overall_sentiment} (Score: {avg_weighted_score if feed_num > 0 else 0})")
 
-            if company_news:
-                # 缓存结果
-                _cache.set_company_news(ticker, [news.model_dump() for news in company_news])
+        # ... existing sorting and caching code ...
 
-            return company_news
-
-        return []
+        return company_news
 
     except Exception as e:
         print(f"Error fetching news for {ticker}: {str(e)}")
         return []
-
 
 def prices_to_df(prices: list[Price]) -> pd.DataFrame:
     """Convert prices to a DataFrame."""
@@ -524,11 +531,11 @@ def calculate_financial_metrics(financial_data: FinancialData, ticker: str) -> F
         cash_flow = financial_data.cash_flow.get("annualReports", [{}])[0] if financial_data.cash_flow else {}
 
         # 打印调试信息
-        print(f"Processing financial data for {ticker}")
-        print(f"Overview data: {overview}")
-        print(f"Income statement: {income_statement}")
-        print(f"Balance sheet: {balance_sheet}")
-        print(f"Cash flow: {cash_flow}")
+        #print(f"Processing financial data for {ticker}")
+        #print(f"Overview data: {overview}")
+        #print(f"Income statement: {income_statement}")
+        #print(f"Balance sheet: {balance_sheet}")
+        #print(f"Cash flow: {cash_flow}")
 
         # 计算企业价值 (Enterprise Value)
         market_cap = float(overview.get("MarketCapitalization", 0))
@@ -558,7 +565,15 @@ def calculate_financial_metrics(financial_data: FinancialData, ticker: str) -> F
         if not latest_quarter:
             from datetime import datetime
             latest_quarter = datetime.now().strftime("%Y-%m-%d")
-
+        # 添加安全转换函数
+        def safe_float(value, default=0.00001):
+            if value is None or value == 'None':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+            
         return FinancialMetrics(
             ticker=ticker,  # 使用传入的ticker而不是从overview中获取
             calendar_date=latest_quarter,
@@ -587,7 +602,7 @@ def calculate_financial_metrics(financial_data: FinancialData, ticker: str) -> F
             operating_cycle=365 / float(overview.get("InventoryTurnover", 365)),
             working_capital_turnover=revenue / (float(balance_sheet.get("totalCurrentAssets", 0)) - float(balance_sheet.get("totalCurrentLiabilities", 0))),
             current_ratio=float(balance_sheet.get("totalCurrentAssets", 0)) / float(balance_sheet.get("totalCurrentLiabilities", 1)),
-            quick_ratio=(float(balance_sheet.get("totalCurrentAssets", 0)) - float(balance_sheet.get("inventory", 0))) / float(balance_sheet.get("totalCurrentLiabilities", 1)),
+            quick_ratio=(float(balance_sheet.get("totalCurrentAssets", 0)) - safe_float(balance_sheet.get("inventory", 0))) / safe_float(balance_sheet.get("totalCurrentLiabilities", 1)),
             cash_ratio=cash_and_equiv / float(balance_sheet.get("totalCurrentLiabilities", 1)),
             operating_cash_flow_ratio=operating_cashflow / float(balance_sheet.get("totalCurrentLiabilities", 1)),
             debt_to_equity=float(overview.get("DebtToEquityRatio", 0)),
