@@ -144,7 +144,7 @@ def sentiment_agent(state: AgentState):
 
         # Calculate confidence level based on the weighted proportion
 
-        confidence = insider_weight * overall_insider_confident + news_weight * overall_sentiment_confidence
+        confidence = (insider_weight * overall_insider_confident + news_weight * overall_sentiment_confidence)*100
         #confidence = 0  # Default confidence when there are no signals
         #if total_weighted_signals > 0:
         #    confidence = round(max(bullish_signals, bearish_signals) / total_weighted_signals, 2) * 100
