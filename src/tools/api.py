@@ -265,18 +265,37 @@ def analyze_news_sentiment(ticker: str, news_title: str, news_summary: str | Non
     """使用DeepSeek模型分析单条新闻情感"""
     return analyze_news_sentiment_batch(ticker, [(news_title, news_summary)])[0]
 
-
 def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit: int = 5) -> list[CompanyNews]:
     """获取公司新闻"""
+    # 将日期字符串转换为datetime对象，用于后续比较
+    end_date_dt = datetime.strptime(end_date, "%Y-%m-%d") if isinstance(end_date, str) else end_date
+    start_date_dt = None
+    if start_date:
+        start_date_dt = datetime.strptime(start_date, "%Y-%m-%d") if isinstance(start_date, str) else start_date
+    
     # 检查缓存
     if cached_data := _cache.get_company_news(ticker):
         # 过滤缓存数据
-        filtered_data = [CompanyNews(**news) for news in cached_data 
-                        if (start_date is None or news["date"] >= start_date)
-                        and news["date"] <= end_date]
+        filtered_data = []
+        for news in cached_data:
+            news_date = None
+            if isinstance(news["date"], str):
+                try:
+                    news_date = datetime.strptime(news["date"], "%Y-%m-%d")
+                except ValueError:
+                    try:
+                        news_date = datetime.strptime(news["date"], "%Y%m%d")
+                    except ValueError:
+                        continue
+            else:
+                news_date = news["date"]
+                
+            if news_date and (start_date_dt is None or news_date >= start_date_dt) and news_date <= end_date_dt:
+                filtered_data.append(CompanyNews(**news))
+                
         filtered_data.sort(key=lambda x: x.date, reverse=True)
         if filtered_data:
-            return filtered_data
+            return filtered_data[:limit]
 
     # 如果缓存中没有数据，从Alpha Vantage获取
     if not (api_key := os.environ.get("ALPHA_VANTAGE_API_KEY")):
@@ -292,9 +311,9 @@ def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit:
         if response.status_code != 200:
             print(f"Error fetching news for {ticker}: {response.status_code}")
             return []
+            
         # 解析响应数据
         data = response.json()
-        #print(f"Response: {data}")
         
         # 检查API限制
         if "Information" in data and "rate limit" in data["Information"].lower():
@@ -310,12 +329,16 @@ def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit:
         company_news = []
         for news_item in data.get("feed", []):
             try:
-                # 提取日期并过滤
-                #print(f"News item: {news_item}")
-                news_date = datetime.strptime(news_item["time_published"][:8] , "%Y%m%d")# 提取YYYYMMDD
-                end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                #print(news_item["time_published"][:8], end_date)
-                if (start_date is None or news_date >= start_date) and news_date <= end_date_dt:
+                # 提取日期并转换为datetime对象
+                time_published = news_item.get("time_published", "")
+                if not time_published or len(time_published) < 8:
+                    continue
+                    
+                # 提取YYYYMMDD并转换为datetime
+                news_date = datetime.strptime(time_published[:8], "%Y%m%d")
+                
+                # 使用datetime对象进行日期比较
+                if (start_date_dt is None or news_date >= start_date_dt) and news_date <= end_date_dt:
                     # 查找当前ticker的相关情感数据
                     ticker_sentiment = next(
                         (ts for ts in news_item.get("ticker_sentiment", []) 
@@ -323,39 +346,45 @@ def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit:
                         None
                     )
                     
+                    # 安全解析数值
+                    relevance_score = 0.0
+                    sentiment_score = 0.0
                     if ticker_sentiment:
-                        # 计算加权情感得分
-                        relevance_score = float(ticker_sentiment["relevance_score"])
-                        sentiment_score = float(ticker_sentiment["ticker_sentiment_score"])
-                        total_weighted_score += relevance_score * sentiment_score
-                        total_relevance += relevance_score
-                        feed_num += 1
+                        try:
+                            relevance_score = float(ticker_sentiment.get("relevance_score", 0))
+                            sentiment_score = float(ticker_sentiment.get("ticker_sentiment_score", 0))
+                            total_weighted_score += relevance_score * sentiment_score
+                            total_relevance += relevance_score
+                            feed_num += 1
+                        except (ValueError, TypeError):
+                            pass
 
                     # 创建CompanyNews对象
                     news = CompanyNews(
                         ticker=ticker,
-                        title=news_item["title"],
+                        title=news_item.get("title", ""),
                         author=", ".join(news_item.get("authors", [])) or "Unknown",
                         source=news_item.get("source", "Unknown"),
-                        published=news_item["time_published"],
-                        url=news_item["url"],
-                        date=news_item["time_published"][:10],  # Extract YYYY-MM-DD from time_published
-                        sentiment=ticker_sentiment["ticker_sentiment_label"] if ticker_sentiment else "Neutral",
-                        sentiment_score=float(ticker_sentiment["ticker_sentiment_score"]) if ticker_sentiment else 0.0,
-                        relevance_score=float(ticker_sentiment["relevance_score"]) if ticker_sentiment else 0.0
+                        published=time_published,
+                        url=news_item.get("url", ""),
+                        date=news_date.strftime("%Y-%m-%d"),  # 格式化为标准日期格式
+                        sentiment=ticker_sentiment.get("ticker_sentiment_label", "Neutral") if ticker_sentiment else "Neutral",
+                        sentiment_score=sentiment_score,
+                        relevance_score=relevance_score
                     )
                     company_news.append(news)
                     
             except Exception as e:
                 print(f"Error processing news item: {str(e)}")
                 continue
-        #print(f"Company news: {company_news}")
         
+        # 排序并限制结果数量
+        company_news.sort(key=lambda x: datetime.strptime(x.date, "%Y-%m-%d") if isinstance(x.date, str) else x.date, reverse=True)
+        company_news = company_news[:limit]
         
-
-        #print(f"Overall sentiment for {ticker}: {overall_sentiment} (Score: {avg_weighted_score if feed_num > 0 else 0})")
-
-        # ... existing sorting and caching code ...
+        # 缓存结果
+        if company_news:
+            _cache.set_company_news(ticker, [news.model_dump() for news in company_news])
 
         return company_news
 
@@ -365,12 +394,30 @@ def get_company_news(ticker: str, end_date: str, start_date: str = None,  limit:
 
 def prices_to_df(prices: list[Price]) -> pd.DataFrame:
     """Convert prices to a DataFrame."""
+    if not prices:
+        # 返回一个空的DataFrame，包含必要的列
+        return pd.DataFrame(columns=["time", "open", "close", "high", "low", "volume"])
+        
     df = pd.DataFrame([p.model_dump() for p in prices])
+    
+    # 确保time列存在
+    if "time" not in df.columns:
+        print("Warning: 'time' column not found in price data")
+        # 如果有日期列，可以尝试使用日期列
+        if "date" in df.columns:
+            df["time"] = df["date"]
+        else:
+            # 创建一个默认的时间列
+            df["time"] = pd.Timestamp.now().strftime("%Y-%m-%d")
+    
     df["Date"] = pd.to_datetime(df["time"])
     df.set_index("Date", inplace=True)
+    
     numeric_cols = ["open", "close", "high", "low", "volume"]
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    
     df.sort_index(inplace=True)
     return df
 
@@ -525,28 +572,30 @@ def calculate_financial_metrics(financial_data: FinancialData, ticker: str) -> F
             print(f"No overview data available for {ticker}")
             return None
 
+        # 添加安全转换函数
+        def safe_float(value, default=0.0):
+            if value is None or value == 'None' or value == '':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
         # 获取最新的财务报表数据
         income_statement = financial_data.income_statement.get("annualReports", [{}])[0] if financial_data.income_statement else {}
         balance_sheet = financial_data.balance_sheet.get("annualReports", [{}])[0] if financial_data.balance_sheet else {}
         cash_flow = financial_data.cash_flow.get("annualReports", [{}])[0] if financial_data.cash_flow else {}
 
-        # 打印调试信息
-        #print(f"Processing financial data for {ticker}")
-        #print(f"Overview data: {overview}")
-        #print(f"Income statement: {income_statement}")
-        #print(f"Balance sheet: {balance_sheet}")
-        #print(f"Cash flow: {cash_flow}")
-
         # 计算企业价值 (Enterprise Value)
-        market_cap = float(overview.get("MarketCapitalization", 0))
-        total_debt = float(balance_sheet.get("totalLongTermDebt", 0)) + float(balance_sheet.get("shortTermDebt", 0))
-        cash_and_equiv = float(balance_sheet.get("cashAndCashEquivalentsAtCarryingValue", 0))
+        market_cap = safe_float(overview.get("MarketCapitalization", 0))
+        total_debt = safe_float(balance_sheet.get("totalLongTermDebt", 0)) + safe_float(balance_sheet.get("shortTermDebt", 0))
+        cash_and_equiv = safe_float(balance_sheet.get("cashAndCashEquivalentsAtCarryingValue", 0))
         enterprise_value = market_cap + total_debt - cash_and_equiv
 
         # 计算收入和自由现金流
-        revenue = float(income_statement.get("totalRevenue", 0))
-        operating_cashflow = float(cash_flow.get("operatingCashflow", 0))
-        capital_expenditure = float(cash_flow.get("capitalExpenditures", 0))
+        revenue = safe_float(income_statement.get("totalRevenue", 0))
+        operating_cashflow = safe_float(cash_flow.get("operatingCashflow", 0))
+        capital_expenditure = safe_float(cash_flow.get("capitalExpenditures", 0))
         free_cash_flow = operating_cashflow - capital_expenditure
 
         # 计算其他比率
@@ -554,76 +603,65 @@ def calculate_financial_metrics(financial_data: FinancialData, ticker: str) -> F
         free_cash_flow_yield = (free_cash_flow / market_cap * 100) if market_cap else 0
 
         # 计算增长率
+        revenue_growth = 0.0
         if len(financial_data.income_statement.get("annualReports", [])) > 1:
-            prev_revenue = float(financial_data.income_statement["annualReports"][1].get("totalRevenue", 0))
+            prev_revenue = safe_float(financial_data.income_statement["annualReports"][1].get("totalRevenue", 0))
             revenue_growth = ((revenue - prev_revenue) / prev_revenue * 100) if prev_revenue else 0
         else:
-            revenue_growth = float(overview.get("QuarterlyRevenueGrowthYOY", 0)) * 100
+            revenue_growth = safe_float(overview.get("QuarterlyRevenueGrowthYOY", 0)) * 100
 
         # 获取最新季度日期，如果没有则使用当前日期
         latest_quarter = overview.get("LatestQuarter", "") or income_statement.get("fiscalDateEnding", "") or balance_sheet.get("fiscalDateEnding", "")
         if not latest_quarter:
             from datetime import datetime
             latest_quarter = datetime.now().strftime("%Y-%m-%d")
-        # 添加安全转换函数
-        def safe_float(value, default=0.00001):
-            if value is None or value == 'None':
-                return default
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return default
             
         return FinancialMetrics(
-            ticker=ticker,  # 使用传入的ticker而不是从overview中获取
+            ticker=ticker,
             calendar_date=latest_quarter,
             report_period=latest_quarter,
             period="ttm",
             currency="USD",
             market_cap=market_cap,
             enterprise_value=enterprise_value,
-            price_to_earnings_ratio=float(overview.get("PERatio", 0)),
-            price_to_book_ratio=float(overview.get("PriceToBookRatio", 0)),
+            price_to_earnings_ratio=safe_float(overview.get("PERatio", 0)),
+            price_to_book_ratio=safe_float(overview.get("PriceToBookRatio", 0)),
             price_to_sales_ratio=price_to_sales,
             enterprise_value_to_revenue_ratio=enterprise_value / revenue if revenue else 0,
-            enterprise_value_to_ebitda_ratio=float(overview.get("EVToEBITDA", 0)),
+            enterprise_value_to_ebitda_ratio=safe_float(overview.get("EVToEBITDA", 0)),
             free_cash_flow_yield=free_cash_flow_yield,
-            peg_ratio=float(overview.get("PEGRatio", 0)),
-            gross_margin=float(overview.get("GrossProfitTTM", 0)) / revenue * 100 if revenue else 0,
-            operating_margin=float(overview.get("OperatingMarginTTM", 0)),
-            net_margin=float(overview.get("ProfitMargin", 0)) * 100,
-            return_on_equity=float(overview.get("ReturnOnEquityTTM", 0)) * 100,
-            return_on_assets=float(overview.get("ReturnOnAssetsTTM", 0)) * 100,
-            return_on_invested_capital=float(overview.get("ReturnOnInvestedCapital", 0)) * 100,
-            asset_turnover=revenue / float(balance_sheet.get("totalAssets", 1)),
-            inventory_turnover=float(overview.get("InventoryTurnover", 0)),
-            receivables_turnover=revenue / float(balance_sheet.get("currentNetReceivables", 1)),
-            days_sales_outstanding=365 / (revenue / float(balance_sheet.get("currentNetReceivables", 1))),
-            operating_cycle=365 / float(overview.get("InventoryTurnover", 365)),
-            working_capital_turnover=revenue / (float(balance_sheet.get("totalCurrentAssets", 0)) - float(balance_sheet.get("totalCurrentLiabilities", 0))),
-            current_ratio=float(balance_sheet.get("totalCurrentAssets", 0)) / float(balance_sheet.get("totalCurrentLiabilities", 1)),
-            quick_ratio=(float(balance_sheet.get("totalCurrentAssets", 0)) - safe_float(balance_sheet.get("inventory", 0))) / safe_float(balance_sheet.get("totalCurrentLiabilities", 1)),
-            cash_ratio=cash_and_equiv / float(balance_sheet.get("totalCurrentLiabilities", 1)),
-            operating_cash_flow_ratio=operating_cashflow / float(balance_sheet.get("totalCurrentLiabilities", 1)),
-            debt_to_equity=float(overview.get("DebtToEquityRatio", 0)),
-            debt_to_assets=total_debt / float(balance_sheet.get("totalAssets", 1)),
-            interest_coverage=float(income_statement.get("ebit", 0)) / float(income_statement.get("interestExpense", 1)),
+            peg_ratio=safe_float(overview.get("PEGRatio", 0)),
+            gross_margin=safe_float(overview.get("GrossProfitTTM", 0)) / revenue * 100 if revenue else 0,
+            operating_margin=safe_float(overview.get("OperatingMarginTTM", 0)),
+            net_margin=safe_float(overview.get("ProfitMargin", 0)) * 100,
+            return_on_equity=safe_float(overview.get("ReturnOnEquityTTM", 0)) * 100,
+            return_on_assets=safe_float(overview.get("ReturnOnAssetsTTM", 0)) * 100,
+            return_on_invested_capital=safe_float(overview.get("ReturnOnInvestedCapital", 0)) * 100,
+            asset_turnover=revenue / safe_float(balance_sheet.get("totalAssets", 1), 1),
+            inventory_turnover=safe_float(overview.get("InventoryTurnover", 0)),
+            receivables_turnover=revenue / safe_float(balance_sheet.get("currentNetReceivables", 1), 1),
+            days_sales_outstanding=365 / (revenue / safe_float(balance_sheet.get("currentNetReceivables", 1), 1) + 0.000001),
+            operating_cycle=365 / (safe_float(overview.get("InventoryTurnover", 365), 1) + 0.000001),
+            working_capital_turnover=revenue / (safe_float(balance_sheet.get("totalCurrentAssets", 0)) - safe_float(balance_sheet.get("totalCurrentLiabilities", 0)) + 0.000001),
+            current_ratio=safe_float(balance_sheet.get("totalCurrentAssets", 0)) / safe_float(balance_sheet.get("totalCurrentLiabilities", 1), 1),
+            quick_ratio=(safe_float(balance_sheet.get("totalCurrentAssets", 0)) - safe_float(balance_sheet.get("inventory", 0))) / safe_float(balance_sheet.get("totalCurrentLiabilities", 1), 1),
+            cash_ratio=cash_and_equiv / safe_float(balance_sheet.get("totalCurrentLiabilities", 1), 1),
+            operating_cash_flow_ratio=operating_cashflow / safe_float(balance_sheet.get("totalCurrentLiabilities", 1), 1),
+            debt_to_equity=safe_float(overview.get("DebtToEquityRatio", 0)),
+            debt_to_assets=total_debt / safe_float(balance_sheet.get("totalAssets", 1), 1),
+            interest_coverage=safe_float(income_statement.get("ebit", 0)) / safe_float(income_statement.get("interestExpense", 1), 1),
             revenue_growth=revenue_growth,
-            earnings_growth=float(overview.get("QuarterlyEarningsGrowthYOY", 0)) * 100,
+            earnings_growth=safe_float(overview.get("QuarterlyEarningsGrowthYOY", 0)) * 100,
             book_value_growth=0.0,  # 需要历史数据计算
-            earnings_per_share_growth=float(overview.get("EPS", 0)),
+            earnings_per_share_growth=safe_float(overview.get("EPS", 0)),
             free_cash_flow_growth=0.0,  # 需要历史数据计算
             operating_income_growth=0.0,  # 需要历史数据计算
             ebitda_growth=0.0,  # 需要历史数据计算
-            payout_ratio=float(overview.get("PayoutRatio", 0)) * 100,
-            earnings_per_share=float(overview.get("EPS", 0)),
-            book_value_per_share=float(overview.get("BookValue", 0)),
-            free_cash_flow_per_share=free_cash_flow / float(overview.get("SharesOutstanding", 1))
+            payout_ratio=safe_float(overview.get("PayoutRatio", 0)) * 100,
+            earnings_per_share=safe_float(overview.get("EPS", 0)),
+            book_value_per_share=safe_float(overview.get("BookValue", 0)),
+            free_cash_flow_per_share=free_cash_flow / safe_float(overview.get("SharesOutstanding", 1), 1)
         )
     except Exception as e:
         print(f"Error calculating financial metrics for {ticker}: {str(e)}")
-        print(f"Overview data: {overview}")
-        print(f"Income statement: {income_statement}")
-        print(f"Balance sheet: {balance_sheet}")
-        print(f"Cash flow: {cash_flow}")
         return None

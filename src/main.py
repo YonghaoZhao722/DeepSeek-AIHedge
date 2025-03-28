@@ -265,4 +265,5 @@ if __name__ == "__main__":
     )
     print_trading_output(result)
     feishu_webhook = os.environ.get("FEISHU_WEBHOOK_URL")
-    send_to_feishu_webhook(result, feishu_webhook)
+    if feishu_webhook !='your-feishu-webhook-url':
+        send_to_feishu_webhook(result, feishu_webhook)

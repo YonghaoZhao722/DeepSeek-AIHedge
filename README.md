@@ -61,7 +61,7 @@ poetry install
 3. Set up your environment variables:
 ```bash
 # Create .env file for your API keys
-cp .env.example .env
+cp src/.env.example src/.env
 ```
 
 4. Set your API keys:
